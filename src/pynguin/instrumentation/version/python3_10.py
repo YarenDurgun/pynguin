@@ -839,6 +839,9 @@ class BranchCoverageInstrumentation(transformer.BranchCoverageInstrumentationAda
         for pid, meta in self._subject_properties.existing_predicates.items():
             if meta.node is node and meta.code_object_id == code_object_id:
                 return pid
+        
+        # MOD - temp debug log
+        print("REGISTER PREDICATE", lineno)
 
         return self._subject_properties.register_predicate(
             tracer.PredicateMetaData(
@@ -1252,6 +1255,9 @@ class LineCoverageInstrumentation(transformer.LineCoverageInstrumentationAdapter
                 line_number=instr.lineno,  # type: ignore[arg-type]
             )
         )
+
+        # MOD - temp debug log
+        print("REGISTER LINE", instr.lineno)
 
         # Insert instructions before each line instructions.
         node.basic_block[before(instr_index)] = self.instructions_generator.generate_instructions(

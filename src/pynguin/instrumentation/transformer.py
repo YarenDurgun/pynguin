@@ -92,6 +92,9 @@ class ModuleAstInfo:
     only_cover_lines: frozenset[int]
     no_cover_lines: frozenset[int]
 
+    # MOD - line addition for fine-grained line targeting
+    explicit_only_cover_lines: frozenset[int]
+
     def __post_init__(self) -> None:
         overlap = self.only_cover_lines & self.no_cover_lines
 
@@ -195,6 +198,25 @@ class ModuleAstInfo:
                     scope_name,
                 )
 
+    # MOD - classmethod
+    @classmethod
+    def _parse_line_targets(cls, line_targets: Collection[str]) -> Iterable[int]:
+        """Parse line targets such as '10' or '10-20' into line numbers."""
+        for target in line_targets:
+            target = target.strip()
+
+            if "-" in target:
+                start_raw, end_raw = target.split("-", maxsplit=1)
+                start = int(start_raw)
+                end = int(end_raw)
+
+                if start > end:
+                    raise ValueError(f"Invalid line range: {target}")
+
+                yield from range(start, end + 1)
+            else:
+                yield int(target)
+
     @classmethod
     def _find_excluded_block_lines(cls, ast: Module) -> Iterable[int]:
         """Find the lines of blocks that should be excluded from coverage.
@@ -241,8 +263,13 @@ class ModuleAstInfo:
             module_ast, source_code = read_module_ast(module_path, module_name)
         except (OSError, AstroidError):
             return None
-
-        only_cover_lines = frozenset(cls._find_lines_in_ast(module_ast, to_cover_config.only_cover))
+        
+        # MOD - line change
+        # only_cover_lines = frozenset(cls._find_lines_in_ast(module_ast, to_cover_config.only_cover))
+        only_cover_lines = frozenset((
+            *cls._find_lines_in_ast(module_ast, to_cover_config.only_cover),
+            *cls._parse_line_targets(to_cover_config.only_cover_lines),
+        ))
 
         no_cover_lines = frozenset((
             *cls._find_lines_in_ast(module_ast, to_cover_config.no_cover),
@@ -259,10 +286,13 @@ class ModuleAstInfo:
             ),
         ))
 
+        explicit_only_cover_lines = frozenset(cls._parse_line_targets(to_cover_config.only_cover_lines))
+
         return cls(
             module_ast=module_ast,
             only_cover_lines=only_cover_lines,
             no_cover_lines=no_cover_lines,
+            explicit_only_cover_lines=explicit_only_cover_lines,
         )
 
 
@@ -283,7 +313,9 @@ class AstInfo:
         The priority for being covered is:
 
         1. Not in `no_cover_lines`
-        2. In `only_cover_lines`, `only_cover_lines` is empty or a parent is in `only_cover_lines`
+        2. In `explicit_only_cover_lines` (strict match, no scope extension), OR
+        3. In `only_cover_lines` (derived from function names) with scope extension, OR
+        4. No targeting specified at all
 
         If a line is in both `no_cover_lines` and `only_cover_lines`, it is not being covered.
 
@@ -296,15 +328,22 @@ class AstInfo:
         if lineno in self.module.no_cover_lines:
             return False
 
-        return (
-            not self.module.only_cover_lines
-            or lineno in self.module.only_cover_lines
-            or any(
-                child_lineno in self.module.only_cover_lines
-                for child_lineno in range(self.ast.fromlineno, self.ast.tolineno + 1)
-                if child_lineno not in self.module.no_cover_lines
-            )
-        )
+        # Explicit line targets use strict matching — no scope extension.
+        if lineno in self.module.explicit_only_cover_lines:
+            return True
+
+        # Lines derived from function/class name targets use scope extension.
+        derived_lines = self.module.only_cover_lines - self.module.explicit_only_cover_lines
+
+        if not derived_lines:
+            # Only explicit lines were specified (or no targeting at all).
+            return not self.module.explicit_only_cover_lines
+
+        # Scope extension: a line inside a scope is covered when the scope's own
+        # definition line is targeted — not when any arbitrary line in the range is.
+        # This prevents the module scope (fromlineno=0) from pulling in every line
+        # just because one targeted function happens to live inside it.
+        return lineno in derived_lines or self.ast.fromlineno in derived_lines
 
     @staticmethod
     def _in_body(body: list[NodeNG], lineno: int) -> bool:
@@ -357,6 +396,33 @@ class AstInfo:
         Returns:
             True if self should be covered, False otherwise.
         """
+        scope_end = self.ast.tolineno or self.ast.fromlineno
+        scope_range = frozenset(range(self.ast.fromlineno, scope_end + 1))
+
+        # The module scope must always be processed so that nested code objects
+        # (functions, classes) can be reached for recursive instrumentation.
+        # Individual line filtering still happens inside should_cover_line().
+        if isinstance(self.ast, Module):
+            if self.module.explicit_only_cover_lines:
+                return bool(self.module.explicit_only_cover_lines & scope_range)
+            if self.module.only_cover_lines:
+                return bool(self.module.only_cover_lines & scope_range)
+            return True
+
+        # For explicit line targets, instrument a function/class scope when at
+        # least one targeted line falls inside it.  Parent scopes are only
+        # rejected when explicitly excluded via no_cover, not merely because
+        # their own definition line was not listed.
+        if self.module.explicit_only_cover_lines:
+            if not (self.module.explicit_only_cover_lines & scope_range):
+                return False
+            return all(
+                definition_node.fromlineno not in self.module.no_cover_lines
+                for definition_node in self.module.module_ast.nodes_of_class(FunctionDef | ClassDef)
+                if definition_node.fromlineno is not None
+                and definition_node.fromlineno <= self.ast.fromlineno <= definition_node.tolineno
+            )
+
         return self._in_cover(self.ast.fromlineno) and all(
             self._in_cover(definition_node.fromlineno)
             for definition_node in self.module.module_ast.nodes_of_class(FunctionDef | ClassDef)
