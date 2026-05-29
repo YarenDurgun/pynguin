@@ -732,7 +732,7 @@ def compute_branch_distance_fitness(
 
     # Check if all predicates are covered
     predicate_fitness: float = 0.0
-    for predicate in subject_properties.existing_predicates:
+    for predicate in subject_properties.coverage_predicates:
         if predicate not in exclude_true:
             predicate_fitness += _predicate_fitness(predicate, trace.true_distances, trace)
         if predicate not in exclude_false:
@@ -786,7 +786,7 @@ def compute_branch_distance_fitness_is_covered(
     exclude_false = set() if exclude_false is None else exclude_false
 
     # Check if all predicates are covered
-    for predicate in subject_properties.existing_predicates:
+    for predicate in subject_properties.coverage_predicates:
         if predicate not in exclude_true and (predicate, 0.0) not in trace.true_distances:
             return False
         if predicate not in exclude_false and (predicate, 0.0) not in trace.false_distances:
@@ -842,12 +842,19 @@ def compute_branch_coverage(trace: ExecutionTrace, subject_properties: SubjectPr
     existing = sum(1 for _ in subject_properties.branch_less_code_objects)
 
     # Every predicate creates two branches
-    existing += len(subject_properties.existing_predicates) * 2
+    existing += len(subject_properties.coverage_predicates) * 2
 
-    # A branch is covered if it has a distance of 0.0
-    # Must consider both branches created by a predicate, i.e. true and false.
-    covered += len([v for v in trace.true_distances.values() if v == 0.0])
-    covered += len([v for v in trace.false_distances.values() if v == 0.0])
+    # A branch is covered if it has a distance of 0.0.
+    # Only count goal predicates (coverage_predicates) — tracking-only predicates
+    # are in the trace but must not be counted against the coverage_predicates denominator.
+    covered += sum(
+        1 for pid in subject_properties.coverage_predicates
+        if trace.true_distances.get(pid, float("inf")) == 0.0
+    )
+    covered += sum(
+        1 for pid in subject_properties.coverage_predicates
+        if trace.false_distances.get(pid, float("inf")) == 0.0
+    )
 
     coverage = 1.0 if existing == 0 else covered / existing
     assert 0.0 <= coverage <= 1.0, "Coverage must be in [0,1]"
