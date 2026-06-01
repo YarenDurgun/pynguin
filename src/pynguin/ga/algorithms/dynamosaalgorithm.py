@@ -263,14 +263,30 @@ class _BranchFitnessGraph:
                 predicate_meta_data.node,
             )
 
+            has_goal_dependency = False
             for dependency in dependencies:
+                dep_predicate_id = nodes_predicates.get(dependency.node)
+                if (
+                    dep_predicate_id is None
+                    or dep_predicate_id not in subject_properties.coverage_predicates
+                ):
+                    # Tracking-only predicate or non-predicate CDG node: no fitness
+                    # function exists for it, so skip the structural edge.
+                    continue
                 goal = bg.BranchGoal(
                     predicate_meta_data.code_object_id,
-                    nodes_predicates[dependency.node],
+                    dep_predicate_id,
                     value=dependency.branch_value,
                 )
                 dependent_ff = self._goal_to_fitness_function(fitness_functions, goal)
                 self._graph.add_edge(dependent_ff, fitness)
+                has_goal_dependency = True
+
+            # If every CDG dependency was tracking-only, no structural edge was added.
+            # Promote to root so the sanity check passes; approach-level gradient via
+            # existing_predicates still navigates the search toward this goal.
+            if not has_goal_dependency and fitness not in self._root_branches:
+                self._root_branches.add(fitness)
 
         # Sanity check
         assert {n for n in self._graph.nodes if self._graph.in_degree(n) == 0}.issubset(
