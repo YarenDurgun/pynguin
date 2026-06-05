@@ -443,6 +443,10 @@ class SubjectProperties:
     # Stores which line id represents which line in which file
     existing_lines: dict[int, LineMetaData] = field(default_factory=dict)
 
+    # Source line numbers that are explicit coverage goals from --only-cover-line-ranges.
+    # Empty means all instrumented lines/branches are goals (default behaviour).
+    target_line_numbers: frozenset[int] = field(default_factory=frozenset)
+
     @property
     def branch_less_code_objects(self) -> Iterable[int]:
         """Get the existing code objects that do not contain a branch.

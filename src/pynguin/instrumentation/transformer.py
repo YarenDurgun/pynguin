@@ -56,6 +56,32 @@ PYNGUIN_NO_COVER_PATTERN = re.compile(r"# +?pynguin: +?no +?cover")
 PRAGMA_NO_COVER_PATTERN = re.compile(r"# +?pragma: +?no +?cover")
 
 
+def _parse_line_ranges(ranges: list[str]) -> frozenset[int]:
+    """Parse a list of line range strings into a frozenset of line numbers.
+
+    Each element may be a single line number (e.g. ``"12"``) or an inclusive
+    range (e.g. ``"10-15"``).
+
+    Args:
+        ranges: The list of range strings to parse.
+
+    Returns:
+        A frozenset of all line numbers covered by the given ranges.
+
+    Raises:
+        ValueError: If a range string cannot be parsed.
+    """
+    lines: set[int] = set()
+    for r in ranges:
+        r = r.strip()
+        if "-" in r:
+            start_s, end_s = r.split("-", 1)
+            lines.update(range(int(start_s), int(end_s) + 1))
+        else:
+            lines.add(int(r))
+    return frozenset(lines)
+
+
 ScopeNode: TypeAlias = Module | ClassDef | FunctionDef | Lambda | ComprehensionScope
 
 
@@ -92,6 +118,10 @@ class ModuleAstInfo:
     only_cover_lines: frozenset[int]
     no_cover_lines: frozenset[int]
 
+    # Lines that are coverage *goals* (subset of only_cover_lines when line-range targeting
+    # is active; empty means all instrumented lines are goals — the default behaviour).
+    target_lines: frozenset[int]
+
     def __post_init__(self) -> None:
         overlap = self.only_cover_lines & self.no_cover_lines
 
@@ -100,6 +130,7 @@ class ModuleAstInfo:
                 f"Conflicting cover lines {sorted(overlap)} "
                 f"are present in both only_cover and no_cover sets"
             )
+
 
     def get_scope(self, lineno: int) -> AstInfo | None:
         """Get the AST info of the scope.
@@ -244,6 +275,24 @@ class ModuleAstInfo:
 
         only_cover_lines = frozenset(cls._find_lines_in_ast(module_ast, to_cover_config.only_cover))
 
+        # Parse explicit line-range targets (e.g. --only-cover-line-ranges "10-15" "20").
+        target_lines = _parse_line_ranges(to_cover_config.only_cover_line_ranges)
+
+        if target_lines:
+            # Expand only_cover_lines to include the first line of every scope that
+            # contains at least one target line.  This ensures the whole enclosing
+            # function (and its branches) is instrumented for approach-level guidance,
+            # while goal creation is later restricted to target_lines only.
+            enclosing_scope_lines = frozenset(
+                scope.fromlineno
+                for scope in module_ast.nodes_of_class(ScopeNode)
+                if not isinstance(scope, Module)
+                and any(
+                    scope.fromlineno <= tl <= scope.tolineno for tl in target_lines
+                )
+            )
+            only_cover_lines = only_cover_lines | enclosing_scope_lines
+
         no_cover_lines = frozenset((
             *cls._find_lines_in_ast(module_ast, to_cover_config.no_cover),
             *cls._find_excluded_block_lines(module_ast),
@@ -263,6 +312,7 @@ class ModuleAstInfo:
             module_ast=module_ast,
             only_cover_lines=only_cover_lines,
             no_cover_lines=no_cover_lines,
+            target_lines=target_lines,
         )
 
 
@@ -276,6 +326,22 @@ class AstInfo:
 
     ast: ScopeNode
     module: ModuleAstInfo
+
+    def is_target_line(self, lineno: int) -> bool:
+        """Check if a line is an explicit coverage goal (line-range targeting).
+
+        When no line-range targets are configured (``target_lines`` is empty)
+        every in-scope line is a goal, so this returns ``True`` unconditionally.
+        When targets are configured, only lines in ``target_lines`` are goals;
+        all other instrumented lines provide branch-distance guidance only.
+
+        Args:
+            lineno: The line number to check.
+
+        Returns:
+            True if the line should be registered as a coverage goal.
+        """
+        return not self.module.target_lines or lineno in self.module.target_lines
 
     def _in_cover(self, lineno: int) -> bool:
         """Check if the lineno is in cover.

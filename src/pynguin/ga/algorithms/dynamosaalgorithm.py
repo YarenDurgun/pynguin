@@ -270,7 +270,15 @@ class _BranchFitnessGraph:
                     value=dependency.branch_value,
                 )
                 dependent_ff = self._goal_to_fitness_function(fitness_functions, goal)
-                self._graph.add_edge(dependent_ff, fitness)
+                if dependent_ff is None:
+                    # The control-dependent branch is instrumented for guidance
+                    # (branch-distance signals) but has no fitness function of its
+                    # own (line-range targeting filtered it out).  Treat the current
+                    # goal as a root so the GA activates it immediately and still
+                    # benefits from the guidance branch's distance in the trace.
+                    self._root_branches.add(fitness)
+                else:
+                    self._graph.add_edge(dependent_ff, fitness)
 
         # Sanity check
         assert {n for n in self._graph.nodes if self._graph.in_degree(n) == 0}.issubset(
@@ -291,7 +299,7 @@ class _BranchFitnessGraph:
     @staticmethod
     def _goal_to_fitness_function(
         search_in: OrderedSet[bg.BranchCoverageTestFitness], goal: bg.BranchGoal
-    ) -> bg.BranchCoverageTestFitness:
+    ) -> bg.BranchCoverageTestFitness | None:
         """Little helper to find the fitness function associated with a certain goal.
 
         Args:
@@ -299,12 +307,13 @@ class _BranchFitnessGraph:
             goal: The goal to search for
 
         Returns:
-            The found fitness function.
+            The found fitness function, or None if the goal has no fitness function
+            (e.g. a guidance-only predicate filtered out by line-range targeting).
         """
         for fitness in search_in:
             if fitness.goal == goal:
                 return fitness
-        raise RuntimeError(f"Could not find fitness function for goal: {goal}")
+        return None
 
     def get_structural_children(
         self, fitness_function: bg.BranchCoverageTestFitness

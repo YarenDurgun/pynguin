@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING, cast
 
 import pynguin.configuration as config
 from pynguin.analyses.constants import ConstantPool, DynamicConstantProvider, EmptyConstantProvider
-from pynguin.instrumentation.transformer import InstrumentationTransformer
+from pynguin.instrumentation.transformer import InstrumentationTransformer, _parse_line_ranges
 from pynguin.instrumentation.version import (
     BranchCoverageInstrumentation,
     CheckedCoverageInstrumentation,
@@ -271,6 +271,14 @@ def install_import_hook(
             method.removeprefix(module_prefix)
             for method in config.configuration.ignore_methods
             if method.startswith(module_prefix)
+        )
+
+    # Propagate line-range targets to SubjectProperties so that goal-creation
+    # code (BranchGoalPool, create_line_coverage_fitness_functions) can filter
+    # without re-parsing the config strings.
+    if to_cover_config.only_cover_line_ranges:
+        subject_properties.target_line_numbers = _parse_line_ranges(
+            to_cover_config.only_cover_line_ranges
         )
 
     to_wrap = None

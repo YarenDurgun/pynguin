@@ -339,8 +339,15 @@ class BranchGoalPool:
     def _compute_branch_goals(
         subject_properties: SubjectProperties,
     ) -> dict[int, list[BranchGoal]]:
+        target = subject_properties.target_line_numbers
         goal_map: dict[int, list[BranchGoal]] = {}
         for predicate_id, meta in subject_properties.existing_predicates.items():
+            # When line-range targeting is active, only create branch goals for
+            # predicates whose source line falls within the target range.
+            # Predicates outside the range still have their distances recorded
+            # in the execution trace and contribute to approach-level guidance.
+            if target and meta.line_no not in target:
+                continue
             entry: list[BranchGoal] = []
             goal_map[predicate_id] = entry
             entry.extend((
@@ -476,12 +483,17 @@ def create_line_coverage_fitness_functions(
     Returns:
         All line coverage related fitness functions.
     """
+    target = executor.subject_properties.target_line_numbers
     return OrderedSet([
         LineCoverageTestFitness(executor, LineCoverageGoal(line_meta.code_object_id, line_id))
         for (
             line_id,
             line_meta,
         ) in executor.subject_properties.existing_lines.items()
+        # When line-range targeting is active, only score the target lines.
+        # Guidance lines outside the range are still instrumented (their branch
+        # distances feed approach-level calculations) but are not scored goals.
+        if not target or line_meta.line_number in target
     ])
 
 
