@@ -718,10 +718,10 @@ def compute_branch_distance_fitness(
     # Handle None. Cannot use empty set as default, because of mutable default args.
     exclude_code = set() if exclude_code is None else exclude_code
 
-    # Check if all branch-less code objects were executed.
+    # Check if all targeted branch-less code objects were executed.
     code_objects_missing: float = sum(
         1.0
-        for code_object_id in subject_properties.branch_less_code_objects
+        for code_object_id in subject_properties.coverage_branchless_code_objects
         if code_object_id not in trace.executed_code_objects and code_object_id not in exclude_code
     )
     assert code_objects_missing >= 0.0, "Amount of non covered code objects cannot be negative"
@@ -730,12 +730,12 @@ def compute_branch_distance_fitness(
     exclude_true = set() if exclude_true is None else exclude_true
     exclude_false = set() if exclude_false is None else exclude_false
 
-    # Check if all predicates are covered
+    # Check if all targeted branch directions are covered
     predicate_fitness: float = 0.0
-    for predicate in subject_properties.coverage_predicates:
-        if predicate not in exclude_true:
+    for predicate, value in subject_properties.coverage_branches:
+        if value and predicate not in exclude_true:
             predicate_fitness += _predicate_fitness(predicate, trace.true_distances, trace)
-        if predicate not in exclude_false:
+        if not value and predicate not in exclude_false:
             predicate_fitness += _predicate_fitness(predicate, trace.false_distances, trace)
 
     assert predicate_fitness >= 0.0, "Predicate fitness cannot be negative."
@@ -774,10 +774,10 @@ def compute_branch_distance_fitness_is_covered(
     # Handle None. Cannot use empty set as default, because of mutable default args.
     exclude_code = set() if exclude_code is None else exclude_code
 
-    # Check if all branch-less code objects were executed.
+    # Check if all targeted branch-less code objects were executed.
     if any(
         code_object_id not in trace.executed_code_objects and code_object_id not in exclude_code
-        for code_object_id in subject_properties.branch_less_code_objects
+        for code_object_id in subject_properties.coverage_branchless_code_objects
     ):
         return False
 
@@ -785,11 +785,15 @@ def compute_branch_distance_fitness_is_covered(
     exclude_true = set() if exclude_true is None else exclude_true
     exclude_false = set() if exclude_false is None else exclude_false
 
-    # Check if all predicates are covered
-    for predicate in subject_properties.coverage_predicates:
-        if predicate not in exclude_true and (predicate, 0.0) not in trace.true_distances:
+    # Check if all targeted branch directions are covered
+    for predicate, value in subject_properties.coverage_branches:
+        if value and predicate not in exclude_true and (predicate, 0.0) not in trace.true_distances:
             return False
-        if predicate not in exclude_false and (predicate, 0.0) not in trace.false_distances:
+        if (
+            not value
+            and predicate not in exclude_false
+            and (predicate, 0.0) not in trace.false_distances
+        ):
             return False
     return True
 
@@ -837,23 +841,21 @@ def compute_branch_coverage(trace: ExecutionTrace, subject_properties: SubjectPr
         The computed coverage value
     """
     covered = len(
-        trace.executed_code_objects.intersection(subject_properties.branch_less_code_objects)
+        trace.executed_code_objects.intersection(
+            subject_properties.coverage_branchless_code_objects
+        )
     )
-    existing = sum(1 for _ in subject_properties.branch_less_code_objects)
+    existing = len(subject_properties.coverage_branchless_code_objects)
 
-    # Every predicate creates two branches
-    existing += len(subject_properties.coverage_predicates) * 2
+    # Each targeted branch direction (coverage_branches) is one coverage unit.
+    # Tracking-only predicates are in the trace but are not counted here.
+    existing += len(subject_properties.coverage_branches)
 
-    # A branch is covered if it has a distance of 0.0.
-    # Only count goal predicates (coverage_predicates) — tracking-only predicates
-    # are in the trace but must not be counted against the coverage_predicates denominator.
+    # A branch direction is covered if it has a distance of 0.0.
     covered += sum(
-        1 for pid in subject_properties.coverage_predicates
-        if trace.true_distances.get(pid, float("inf")) == 0.0
-    )
-    covered += sum(
-        1 for pid in subject_properties.coverage_predicates
-        if trace.false_distances.get(pid, float("inf")) == 0.0
+        1
+        for pid, value in subject_properties.coverage_branches
+        if (trace.true_distances if value else trace.false_distances).get(pid, float("inf")) == 0.0
     )
 
     coverage = 1.0 if existing == 0 else covered / existing

@@ -445,6 +445,18 @@ class SubjectProperties:
     # toward a line-range target) are in existing_predicates but not here.
     coverage_predicates: set[int] = field(default_factory=set)
 
+    # Direction-granular goals: the set of (predicate_id, branch_value) pairs that
+    # are actual search objectives. Supersedes coverage_predicates for goal minting
+    # under branch-level targeting; coverage_predicates is kept as the derived
+    # {pid for pid, _ in coverage_branches} for the consumers that need predicate ids.
+    coverage_branches: set[tuple[int, bool]] = field(default_factory=set)
+
+    # The branch-less code objects that are actual search objectives. Under branch-level
+    # targeting this is filtered to code objects whose own lines fall within the target
+    # range (so e.g. <module> and unrelated classes are not pursued); without targeting
+    # it is every branch-less code object (the classic behaviour).
+    coverage_branchless_code_objects: set[int] = field(default_factory=set)
+
     # Stores which line id represents which line in which file
     existing_lines: dict[int, LineMetaData] = field(default_factory=dict)
 
@@ -472,6 +484,8 @@ class SubjectProperties:
         self.existing_code_objects.clear()
         self.existing_predicates.clear()
         self.coverage_predicates.clear()
+        self.coverage_branches.clear()
+        self.coverage_branchless_code_objects.clear()
         self.existing_lines.clear()
         self.instrumentation_tracer.reset()
 

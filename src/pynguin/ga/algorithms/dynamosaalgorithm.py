@@ -268,10 +268,12 @@ class _BranchFitnessGraph:
                 dep_predicate_id = nodes_predicates.get(dependency.node)
                 if (
                     dep_predicate_id is None
-                    or dep_predicate_id not in subject_properties.coverage_predicates
+                    or (dep_predicate_id, dependency.branch_value)
+                    not in subject_properties.coverage_branches
                 ):
-                    # Tracking-only predicate or non-predicate CDG node: no fitness
-                    # function exists for it, so skip the structural edge.
+                    # Tracking-only predicate, non-predicate CDG node, or a direction
+                    # that is not itself a goal: no fitness function exists for it, so
+                    # skip the structural edge.
                     continue
                 goal = bg.BranchGoal(
                     predicate_meta_data.code_object_id,

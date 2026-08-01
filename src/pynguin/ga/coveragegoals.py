@@ -332,7 +332,7 @@ class BranchGoalPool:
     ) -> list[BranchlessCodeObjectGoal]:
         return [
             BranchlessCodeObjectGoal(code_object_id)
-            for code_object_id in subject_properties.branch_less_code_objects
+            for code_object_id in subject_properties.coverage_branchless_code_objects
         ]
 
     @staticmethod
@@ -340,14 +340,12 @@ class BranchGoalPool:
         subject_properties: SubjectProperties,
     ) -> dict[int, list[BranchGoal]]:
         goal_map: dict[int, list[BranchGoal]] = {}
-        for predicate_id in subject_properties.coverage_predicates:
+        # One goal per targeted branch direction (see resolve_coverage_branches).
+        for predicate_id, value in subject_properties.coverage_branches:
             meta = subject_properties.existing_predicates[predicate_id]
-            entry: list[BranchGoal] = []
-            goal_map[predicate_id] = entry
-            entry.extend((
-                BranchGoal(meta.code_object_id, predicate_id, value=True),
-                BranchGoal(meta.code_object_id, predicate_id, value=False),
-            ))
+            goal_map.setdefault(predicate_id, []).append(
+                BranchGoal(meta.code_object_id, predicate_id, value=value)
+            )
         return goal_map
 
 

@@ -287,7 +287,9 @@ class ModuleAstInfo:
             return None
 
         only_cover_lines = frozenset(cls._find_lines_in_ast(module_ast, to_cover_config.only_cover))
-        only_cover_line_ranges = frozenset(cls._parse_line_ranges(to_cover_config.only_cover_line_ranges))
+        only_cover_line_ranges = frozenset(
+            cls._parse_line_ranges(to_cover_config.only_cover_line_ranges)
+        )
 
         no_cover_lines = frozenset((
             *cls._find_lines_in_ast(module_ast, to_cover_config.no_cover),
@@ -596,6 +598,7 @@ class AstInfo:
                 )
 
         return True
+
 
 class InstrumentationAdapter(Protocol):
     """Protocol for byte-code instrumentation adapters.
@@ -1350,7 +1353,125 @@ class InstrumentationTransformer:
             to_cover_config=self._to_cover_config,
         )
 
-        return self._instrument_code_recursive(code, module_ast_info)
+        instrumented_code = self._instrument_code_recursive(code, module_ast_info)
+        # Resolve the direction-granular search goals now that all CDGs are built.
+        self._resolve_coverage_branches()
+        return instrumented_code
+
+    @staticmethod
+    def _node_for_line(cdg: cf.ControlDependenceGraph, lineno: int):
+        """Return the basic-block node whose instructions include the given line."""
+        for node in cdg.graph.nodes:
+            if isinstance(node, cf.BasicBlockNode) and any(
+                isinstance(instr, Instr) and instr.lineno == lineno
+                for instr in node.basic_block
+            ):
+                return node
+        return None
+
+    def _resolve_coverage_branches(self) -> None:
+        """Populate the direction-granular search goals for branch-level targeting.
+
+        Sets ``coverage_branches`` (targeted predicate directions) and
+        ``coverage_branchless_code_objects`` (targeted branch-less code objects).
+
+        Without target line ranges, every goal predicate contributes both of its
+        directions and every branch-less code object is a goal (the classic
+        behaviour). With target line ranges:
+
+        - a target line that is a predicate's own line yields both directions of
+          that predicate ("cover this whole branch");
+        - a target line inside a branch body yields the single controlling edge
+          that reaches it (predicate + branch value), resolved via the
+          control-dependence graph. This turns a non-predicate target line into a
+          real goal instead of an empty test suite;
+        - a branch-less code object is a goal only if a target line falls within
+          its own lines, so ``<module>`` and unrelated classes/functions are not
+          pursued as collateral goals.
+
+        Runs at the end of ``instrument_code`` so the resolved goals are available
+        to every downstream consumer (fitness, coverage, goal pool) exactly like
+        ``coverage_predicates`` is, without depending on a goal pool being built.
+        """
+        subject_properties = self._subject_properties
+        target_line_ranges = self._to_cover_config.only_cover_line_ranges
+
+        if not target_line_ranges:
+            subject_properties.coverage_branches = {
+                (predicate_id, value)
+                for predicate_id in subject_properties.coverage_predicates
+                for value in (True, False)
+            }
+            subject_properties.coverage_branchless_code_objects = set(
+                subject_properties.branch_less_code_objects
+            )
+            return
+
+        target_lines = set(ModuleAstInfo._parse_line_ranges(target_line_ranges))  # noqa: SLF001
+        branches: set[tuple[int, bool]] = set()
+        for code_object_id, meta in subject_properties.existing_code_objects.items():
+            branches |= self._resolve_branches_in_code_object(code_object_id, meta, target_lines)
+        subject_properties.coverage_branches = branches
+        # Keep coverage_predicates consistent with the resolved directions.
+        subject_properties.coverage_predicates = {predicate_id for predicate_id, _ in branches}
+
+        # A branch-less code object is only a goal if a target line lies in its own lines.
+        subject_properties.coverage_branchless_code_objects = {
+            code_object_id
+            for code_object_id in subject_properties.branch_less_code_objects
+            if self._code_object_lines(subject_properties.existing_code_objects[code_object_id].cfg)
+            & target_lines
+        }
+
+    @staticmethod
+    def _code_object_lines(cfg: cf.CFG) -> set[int]:
+        """Return the set of source line numbers owned by this code object.
+
+        Nested code objects (functions/classes) are separate CFGs, so their lines
+        are not included here.
+        """
+        return {
+            instr.lineno
+            for node in cfg.basic_block_nodes
+            for instr in node.basic_block
+            if isinstance(instr, Instr) and isinstance(instr.lineno, int)
+        }
+
+    def _resolve_branches_in_code_object(
+        self, code_object_id: int, meta, target_lines: set[int]
+    ) -> set[tuple[int, bool]]:
+        """Resolve the targeted branch directions for a single code object."""
+        predicates = {
+            predicate_id: predicate_meta
+            for predicate_id, predicate_meta in self._subject_properties.existing_predicates.items()
+            if predicate_meta.code_object_id == code_object_id
+        }
+        node_to_predicate = {meta.node: pid for pid, meta in predicates.items()}
+        # A single line can carry several predicates (e.g. short-circuit ``and``/
+        # ``or``, or a ``while`` header), so map each line to the list of its
+        # predicate ids rather than a single id.
+        line_to_predicates: dict[int, list[int]] = {}
+        for predicate_id, predicate_meta in predicates.items():
+            line_to_predicates.setdefault(predicate_meta.line_no, []).append(predicate_id)
+
+        branches: set[tuple[int, bool]] = set()
+        for lineno in target_lines:
+            if lineno in line_to_predicates:
+                # Case A: the target is a predicate's own line -> cover both arms
+                # of every predicate on that line.
+                for predicate_id in line_to_predicates[lineno]:
+                    branches.add((predicate_id, True))
+                    branches.add((predicate_id, False))
+                continue
+            # Case B: the target is a body line -> the single controlling edge.
+            node = self._node_for_line(meta.cdg, lineno)
+            if node is None:
+                continue
+            for dependency in meta.cdg.get_control_dependencies(node):
+                dep_predicate_id = node_to_predicate.get(dependency.node)
+                if dep_predicate_id is not None:
+                    branches.add((dep_predicate_id, dependency.branch_value))
+        return branches
 
     def _instrument_code_recursive(
         self,
