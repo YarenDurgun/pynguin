@@ -6,8 +6,12 @@
 #
 import asyncio
 import importlib
+import importlib.abc
+import importlib.machinery
+import importlib.util
+import sys
 
-from pynguin.instrumentation.machinery import install_import_hook
+from pynguin.instrumentation.machinery import InstrumentationLoader, install_import_hook
 from pynguin.instrumentation.tracer import SubjectProperties
 
 
@@ -122,3 +126,41 @@ def test_pynguin_no_cover_classes(subject_properties: SubjectProperties):
             2,
             3,
         }
+
+
+class _SourceTreeFinder(importlib.abc.MetaPathFinder):
+    """Mimics the finder of a meson-python editable install.
+
+    It maps a module name to a file that the PathFinder cannot find.
+    """
+
+    def __init__(self, fullname: str, file_path):
+        self._fullname = fullname
+        self._file_path = file_path
+
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname != self._fullname:
+            return None
+        return importlib.util.spec_from_file_location(fullname, self._file_path)
+
+
+def test_hook_falls_back_to_other_finders(subject_properties: SubjectProperties, tmp_path):
+    module_name = "pynguin_test_editable_install_module"
+    module_file = tmp_path / "hidden" / "module.py"
+    module_file.parent.mkdir()
+    module_file.write_text("def foo(x):\n    if x > 0:\n        return 1\n    return 0\n")
+    finder = _SourceTreeFinder(module_name, module_file)
+    sys.meta_path.append(finder)
+    try:
+        assert importlib.machinery.PathFinder.find_spec(module_name) is None
+        with install_import_hook(module_name, subject_properties):
+            with subject_properties.instrumentation_tracer:
+                module = importlib.import_module(module_name)
+            assert isinstance(module.__loader__, InstrumentationLoader)
+            assert len(subject_properties.existing_code_objects) > 0
+            with subject_properties.instrumentation_tracer:
+                assert module.foo(1) == 1
+            assert subject_properties.instrumentation_tracer.get_trace().executed_code_objects
+    finally:
+        sys.meta_path.remove(finder)
+        sys.modules.pop(module_name, None)

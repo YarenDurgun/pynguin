@@ -191,7 +191,9 @@ class InstrumentationFinder(MetaPathFinder):
             An optional ModuleSpec
         """
         if self._should_instrument(fullname):
-            spec: ModuleSpec = self._original_pathfinder.find_spec(fullname, path, target)
+            spec: ModuleSpec | None = self._original_pathfinder.find_spec(fullname, path, target)
+            if spec is None:
+                spec = self._find_spec_with_other_finders(fullname, path, target)
             if spec is not None:
                 if isinstance(spec.loader, FileLoader):
                     spec.loader = InstrumentationLoader(
@@ -209,6 +211,39 @@ class InstrumentationFinder(MetaPathFinder):
                     "Loader for module under test is not a FileLoader, can not instrument."
                 )
 
+        return None
+
+    def _find_spec_with_other_finders(self, fullname: str, path, target) -> ModuleSpec | None:
+        """Ask the other finders on sys.meta_path for the module under test.
+
+        Some installations, like editable installs built with meson-python, register
+        their own finder that maps module names to files in the source tree. Without
+        this fallback, such a module is imported without instrumentation.
+
+        Args:
+            fullname: The full name of the module
+            path: The path
+            target: The target
+
+        Returns:
+            The spec of the first other finder that knows the module, or None
+        """
+        for finder in list(sys.meta_path):
+            if (
+                finder is self._original_pathfinder
+                or isinstance(finder, InstrumentationFinder)
+                or not hasattr(finder, "find_spec")
+            ):
+                continue
+            try:
+                spec = finder.find_spec(fullname, path, target)
+            except Exception:  # noqa: BLE001
+                # a broken third-party finder must not prevent the import
+                self._logger.debug("Finder %r failed to find %s", finder, fullname)
+                continue
+            if spec is not None:
+                self._logger.debug("Module under test %s found by %r", fullname, finder)
+                return spec
         return None
 
 
