@@ -308,11 +308,9 @@ class _ControlDependencyGraph:
     def _add_roots_for_unreachable_cycles(self) -> None:
         """Make goals reachable that are part of a cycle no other goal leads into.
 
-        A loop's predicate and a branch inside the loop depend on each other (via the
-        loop's back edge). If the predicates before the loop are not goals, e.g. because
-        only some lines are targeted (`only_cover_line_ranges`), none of the two is a
-        root, and no root leads to them: they would never become current goals, and the
-        search would stop as soon as the current goals are covered. The members of each
+        A loop's predicate and a branch inside the loop depend on each other. If the
+        predicates before the loop are not goals, none of the two is a root, and no
+        root leads to them: they would never become current goals. The members of each
         such cycle (a strongly connected component without incoming edges that no root
         reaches) therefore become root goals.
         """

@@ -132,7 +132,7 @@ def get_root_control_flow_distance(
     Returns:
         The control flow distance, (0.0, 0.0) if it was executed, otherwise (1.0, 0.0)
     """
-    assert code_object_id in subject_properties.branch_less_code_objects
+    assert code_object_id in subject_properties.goal_code_objects
 
     distance = ControlFlowDistance()
     if code_object_id in result.execution_trace.executed_code_objects:

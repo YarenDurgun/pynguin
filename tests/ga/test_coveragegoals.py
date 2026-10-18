@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import contextlib
 import importlib
+import inspect
 from typing import TYPE_CHECKING
 from unittest import mock
 from unittest.mock import MagicMock
@@ -17,14 +18,19 @@ import pytest
 
 import pynguin.configuration as config
 import pynguin.ga.coveragegoals as bg
+import pynguin.ga.fitness_metrics as fm
 import pynguin.ga.testcasechromosome as tcc
 import pynguin.utils.controlflowdistance as cfd
+from pynguin.configuration import ToCoverConfiguration
 from pynguin.instrumentation.machinery import install_import_hook
 from pynguin.instrumentation.tracer import ExecutionTrace, LineMetaData, SubjectProperties
+from pynguin.instrumentation.transformer import InstrumentationTransformer
+from pynguin.instrumentation.version import BranchCoverageInstrumentation
 from pynguin.testcase.execution import ExecutionResult, TestCaseExecutor
 from pynguin.utils.naming import get_module_alias
 from pynguin.utils.orderedset import OrderedSet
 from tests.testcase._builders import call_stmt, int_stmt, make_test_case
+from tests.testutils import instrument_function
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
@@ -630,3 +636,51 @@ def test_line_coverage_branch_distance_guidance(subject_properties: SubjectPrope
         fit_pos1 = fitness_fn.compute_fitness(chrom_pos1)
         assert fit_pos1 == 0.0
         assert fitness_fn.compute_is_covered(chrom_pos1)
+
+
+def _function_with_branch_after_first_statement(items):
+    items = list(items)
+    if len(items) > 2:
+        return "long"
+    return "short"
+
+
+def test_targeted_first_statement_of_branching_function_gets_code_object_goal(
+    subject_properties: SubjectProperties,
+):
+    function = _function_with_branch_after_first_statement
+    first_line = inspect.getsourcelines(function)[1] + 1
+    line_ranges = [str(first_line)]
+    config.configuration.to_cover.only_cover_line_ranges = line_ranges
+    transformer = InstrumentationTransformer(
+        subject_properties,
+        [BranchCoverageInstrumentation(subject_properties)],
+        to_cover_config=ToCoverConfiguration(
+            enable_inline_pragma_no_cover=False, only_cover_line_ranges=line_ranges
+        ),
+    )
+    instrument_function(transformer, function)
+    (code_object_id,) = [
+        cid
+        for cid, meta in subject_properties.existing_code_objects.items()
+        if meta.code_object.co_name == function.__name__
+    ]
+    assert code_object_id not in subject_properties.branch_less_code_objects
+
+    pool = bg.BranchGoalPool(subject_properties)
+
+    goal = bg.BranchlessCodeObjectGoal(code_object_id)
+    assert goal in pool.branch_coverage_goals
+    assert not pool.branch_goals  # the branch does not control the targeted line
+
+    not_executed = ExecutionTrace()
+    executed = ExecutionTrace()
+    executed.executed_code_objects.add(code_object_id)
+    result = MagicMock(execution_trace=not_executed)
+    assert goal.get_distance(result, subject_properties).approach_level == 1
+    assert not goal.is_covered(result)
+    assert goal.is_covered(MagicMock(execution_trace=executed))
+
+    # The coverage metric counts the same goal, and not the untargeted branches.
+    assert fm.compute_branch_coverage(not_executed, subject_properties) == 0.0
+    assert fm.compute_branch_coverage(executed, subject_properties) == 1.0

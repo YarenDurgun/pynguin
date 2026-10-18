@@ -33,6 +33,7 @@ if TYPE_CHECKING:
 def executor():
     mock = MagicMock(TestCaseExecutor)
     mock.subject_properties.branch_less_code_objects = [0]
+    mock.subject_properties.goal_code_objects = [0]
     mock.subject_properties.existing_lines = {0: MagicMock()}
     return mock
 

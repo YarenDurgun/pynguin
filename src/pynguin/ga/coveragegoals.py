@@ -338,10 +338,12 @@ class BranchGoalPool:
     """Convenience class that creates and provides all branch coverage related goals."""
 
     def __init__(self, subject_properties: SubjectProperties):  # noqa: D107
+        # The branch goals come first, computing them determines the targeted code objects
+        # that need a code object goal (see `_compute_branchless_code_object_goals`).
+        self._predicate_to_branch_goals = self._compute_branch_goals(subject_properties)
         self._branchless_code_object_goals = self._compute_branchless_code_object_goals(
             subject_properties
         )
-        self._predicate_to_branch_goals = self._compute_branch_goals(subject_properties)
 
     @property
     def branchless_code_object_goals(self) -> list[BranchlessCodeObjectGoal]:
@@ -376,9 +378,12 @@ class BranchGoalPool:
     def _compute_branchless_code_object_goals(
         subject_properties: SubjectProperties,
     ) -> list[BranchlessCodeObjectGoal]:
+        # Besides the code objects without branches, a code object with branches gets a
+        # code object goal if it contains a targeted line that no predicate controls: no
+        # branch goal leads there, and the goal is covered as soon as the code object runs.
         return [
             BranchlessCodeObjectGoal(code_object_id)
-            for code_object_id in subject_properties.branch_less_code_objects
+            for code_object_id in subject_properties.goal_code_objects
         ]
 
     @staticmethod

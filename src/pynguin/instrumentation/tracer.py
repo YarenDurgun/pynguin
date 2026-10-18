@@ -490,6 +490,10 @@ class SubjectProperties:
     # Filled by the instrumentation when line-range targeting is active.
     targeted_else_branches: dict[int, ElseBranchMetaData] = field(default_factory=dict)
 
+    # Code objects with a targeted line that no predicate controls. A code object with
+    # branches otherwise get no goal for such a line.
+    targeted_entry_code_objects: set[int] = field(default_factory=set)
+
     # Cache for line control dependencies:
     # line_id -> (is_root_dependent, ((predicate_id, branch_value), ...))
     _line_control_dependencies: dict[int, tuple[bool, tuple[tuple[int, bool], ...]]] = field(
@@ -514,6 +518,31 @@ class SubjectProperties:
             )
         )
 
+    @property
+    def goal_code_objects(self) -> list[int]:
+        """Get the code objects that are coverage goals of their own.
+
+        Returns:
+            The ids of the code objects that are coverage goals of their own.
+        """
+        ids = list(self.branch_less_code_objects)
+        ids.extend(sorted(set(self.targeted_entry_code_objects) - set(ids)))
+        return ids
+
+    def branch_coverage_targets(self) -> dict[int, set[bool]]:
+        """Get the predicates and branch values that are coverage goals.
+
+        With line-range targeting, these are the `coverage_predicates`, even if a targeted
+        line made a code object a goal instead (see `goal_code_objects`). Otherwise, every
+        known predicate is a goal if `coverage_predicates` is empty.
+
+        Returns:
+            The branch values to cover per predicate id.
+        """
+        if self.coverage_predicates or self.targeted_entry_code_objects:
+            return self.coverage_predicates
+        return {pid: {True, False} for pid in self.existing_predicates}
+
     def reset(self) -> None:
         """Resets the subject properties."""
         self.code_object_counter = count()
@@ -522,6 +551,7 @@ class SubjectProperties:
         self.coverage_predicates.clear()
         self.existing_lines.clear()
         self.targeted_else_branches.clear()
+        self.targeted_entry_code_objects.clear()
         self._line_control_dependencies.clear()
         self.instrumentation_tracer.reset()
 
@@ -549,6 +579,7 @@ class SubjectProperties:
             coverage_predicates=self.coverage_predicates,
             existing_lines=self.existing_lines,
             targeted_else_branches=self.targeted_else_branches,
+            targeted_entry_code_objects=self.targeted_entry_code_objects,
         )
         props._line_control_dependencies = self._line_control_dependencies
         return props
@@ -736,6 +767,27 @@ class SubjectProperties:
             added_predicates.update(
                 self._add_else_branch_predicates(self.targeted_else_branches[line])
             )
+        added_predicates.update(
+            self._add_controlling_predicates_for_lines(
+                uncovered_lines, record_entry_code_objects=target_lines is not None
+            )
+        )
+        return added_predicates
+
+    def _add_controlling_predicates_for_lines(
+        self, lines: set[int], *, record_entry_code_objects: bool
+    ) -> set[int]:
+        """Add the predicates controlling the basic blocks of the given lines.
+
+        Args:
+            lines: The line numbers.
+            record_entry_code_objects: Whether to record the code objects of lines that no
+                predicate controls in `targeted_entry_code_objects`.
+
+        Returns:
+            The set of predicate IDs that were added to coverage_predicates.
+        """
+        added: set[int] = set()
         for code_object_id, code_meta in self.existing_code_objects.items():
             for node in code_meta.cfg.graph.nodes:
                 if not isinstance(node, BasicBlockNode):
@@ -746,11 +798,28 @@ class SubjectProperties:
                 node_lines = {
                     instr.lineno for instr in original_instructions if isinstance(instr.lineno, int)
                 }
-                if node_lines & uncovered_lines:
-                    added_predicates.update(
-                        self._add_controlling_predicates_for_node(code_object_id, code_meta, node)
-                    )
-        return added_predicates
+                if not node_lines & lines:
+                    continue
+                added.update(
+                    self._add_controlling_predicates_for_node(code_object_id, code_meta, node)
+                )
+                if record_entry_code_objects and not self._has_predicate_dependency(
+                    code_object_id, code_meta, node
+                ):
+                    self.targeted_entry_code_objects.add(code_object_id)
+        return added
+
+    def _has_predicate_dependency(
+        self, code_object_id: int, code_meta: CodeObjectMetaData, node: BasicBlockNode
+    ) -> bool:
+        """Whether the node is control-dependent on a (non-auxiliary) predicate."""
+        return any(
+            meta.code_object_id == code_object_id
+            and meta.node == dep.node
+            and not getattr(meta, "is_auxiliary", False)
+            for dep in code_meta.cdg.get_control_dependencies(node)
+            for meta in self.existing_predicates.values()
+        )
 
     def validate_execution_trace(self, execution_trace: ExecutionTrace) -> None:
         """Validate the execution trace.

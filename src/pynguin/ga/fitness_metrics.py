@@ -79,7 +79,7 @@ def compute_branch_distance_fitness(
     # Check if all branch-less code objects were executed.
     code_objects_missing: float = sum(
         1.0
-        for code_object_id in subject_properties.branch_less_code_objects
+        for code_object_id in subject_properties.goal_code_objects
         if code_object_id not in trace.executed_code_objects and code_object_id not in exclude_code
     )
     assert code_objects_missing >= 0.0, "Amount of non covered code objects cannot be negative"
@@ -90,9 +90,7 @@ def compute_branch_distance_fitness(
 
     # Check if all predicates are covered
     predicate_fitness: float = 0.0
-    all_targets = subject_properties.coverage_predicates or {
-        pid: {True, False} for pid in subject_properties.existing_predicates
-    }
+    all_targets = subject_properties.branch_coverage_targets()
     targets = {
         pid: vals
         for pid, vals in all_targets.items()
@@ -143,7 +141,7 @@ def compute_branch_distance_fitness_is_covered(
     # Check if all branch-less code objects were executed.
     if any(
         code_object_id not in trace.executed_code_objects and code_object_id not in exclude_code
-        for code_object_id in subject_properties.branch_less_code_objects
+        for code_object_id in subject_properties.goal_code_objects
     ):
         return False
 
@@ -152,9 +150,7 @@ def compute_branch_distance_fitness_is_covered(
     exclude_false = set() if exclude_false is None else exclude_false
 
     # Check if all predicates are covered
-    all_targets = subject_properties.coverage_predicates or {
-        pid: {True, False} for pid in subject_properties.existing_predicates
-    }
+    all_targets = subject_properties.branch_coverage_targets()
     targets = {
         pid: vals
         for pid, vals in all_targets.items()
@@ -219,12 +215,10 @@ def compute_branch_covered_goals(
         The set of covered branch goals.
     """
     covered_goals: set[tuple[int, bool] | int] = set(
-        trace.executed_code_objects.intersection(subject_properties.branch_less_code_objects)
+        trace.executed_code_objects.intersection(subject_properties.goal_code_objects)
     )
 
-    all_targets = subject_properties.coverage_predicates or {
-        pid: {True, False} for pid in subject_properties.existing_predicates
-    }
+    all_targets = subject_properties.branch_coverage_targets()
     targets = {
         pid: vals
         for pid, vals in all_targets.items()
@@ -255,11 +249,9 @@ def compute_branch_coverage(trace: ExecutionTrace, subject_properties: SubjectPr
     Raises:
         RuntimeError: If there are no subject properties to compute coverage for.
     """
-    existing = sum(1 for _ in subject_properties.branch_less_code_objects)
+    existing = sum(1 for _ in subject_properties.goal_code_objects)
 
-    all_targets = subject_properties.coverage_predicates or {
-        pid: {True, False} for pid in subject_properties.existing_predicates
-    }
+    all_targets = subject_properties.branch_coverage_targets()
     targets = {
         pid: vals
         for pid, vals in all_targets.items()
