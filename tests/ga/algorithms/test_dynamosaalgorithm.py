@@ -6,12 +6,14 @@
 from __future__ import annotations
 
 import importlib
+import inspect
 from logging import Logger
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 from unittest import mock
 from unittest.mock import MagicMock
 
+import networkx as nx
 import pytest
 
 import pynguin.configuration as config
@@ -337,6 +339,55 @@ def test_control_dependency_graph_with_loop(subject_properties: SubjectPropertie
     ]
     assert len(loop_branches) > 0
     assert all(graph._graph.in_degree(f) > 0 for f in loop_branches)
+
+
+def test_control_dependency_graph_targeted_loop_is_reachable(
+    subject_properties: SubjectProperties,
+):
+    def loop_after_check(items):
+        if len(items) < 2:
+            raise ValueError("need two")
+        for x in items:
+            if x > 0:
+                return x
+        return None
+
+    # Target the loop header and the branch inside it, but not the check before the loop:
+    # the loop's predicate and the inner branch then depend only on each other.
+    source_lines, first_line = inspect.getsourcelines(loop_after_check)
+    for_line = first_line + next(i for i, line in enumerate(source_lines) if "for x" in line)
+    line_ranges = [f"{for_line}-{for_line + 2}"]
+    config.configuration.to_cover.only_cover_line_ranges = line_ranges
+
+    adapters = [
+        BranchCoverageInstrumentation(subject_properties),
+        LineCoverageInstrumentation(subject_properties),
+    ]
+    transformer = InstrumentationTransformer(
+        subject_properties,
+        adapters,
+        to_cover_config=ToCoverConfiguration(
+            enable_inline_pragma_no_cover=False, only_cover_line_ranges=line_ranges
+        ),
+    )
+    instrument_function(transformer, loop_after_check)
+
+    executor = MagicMock()
+    executor.subject_properties = subject_properties
+    pool = bg.BranchGoalPool(subject_properties)
+    branch_ffs = bg.create_branch_coverage_fitness_functions(executor, pool)
+    graph = dyna._ControlDependencyGraph(branch_ffs, subject_properties)
+
+    reachable = set(graph.root_goals)
+    for root in graph.root_goals:
+        reachable.update(nx.descendants(graph._graph, root))
+    assert any(
+        not f.goal.is_branchless_code_object
+        for f in branch_ffs
+        if isinstance(f, bg.BranchCoverageTestFitness)
+    ), "the targeted lines should produce branch goals"
+    # every goal can become a current goal, otherwise DynaMOSA stops before reaching it
+    assert reachable == set(graph._graph.nodes)
 
 
 def test_fitness_graph_with_untracked_dependency(

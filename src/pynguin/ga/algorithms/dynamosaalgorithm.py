@@ -303,6 +303,40 @@ class _ControlDependencyGraph:
                     "or have no covered dependencies."
                 )
 
+        self._add_roots_for_unreachable_cycles()
+
+    def _add_roots_for_unreachable_cycles(self) -> None:
+        """Make goals reachable that are part of a cycle no other goal leads into.
+
+        A loop's predicate and a branch inside the loop depend on each other (via the
+        loop's back edge). If the predicates before the loop are not goals, e.g. because
+        only some lines are targeted (`only_cover_line_ranges`), none of the two is a
+        root, and no root leads to them: they would never become current goals, and the
+        search would stop as soon as the current goals are covered. The members of each
+        such cycle (a strongly connected component without incoming edges that no root
+        reaches) therefore become root goals.
+        """
+        reachable: set[ff.TestCaseFitnessFunction] = set()
+        for root in self._root_goals:
+            reachable.add(root)
+            reachable.update(nx.descendants(self._graph, root))
+        if len(reachable) == self._graph.number_of_nodes():
+            return
+
+        condensation = nx.condensation(self._graph)
+        for component in condensation.nodes:
+            if condensation.in_degree(component) != 0:
+                continue  # reached through another component once that is reached
+            members = condensation.nodes[component]["members"]
+            if members & reachable:
+                continue
+            # keep the graph's (insertion) order, so that the result is deterministic
+            for node in self._graph.nodes:
+                if node in members:
+                    self._root_goals.add(node)
+                    reachable.add(node)
+                    reachable.update(nx.descendants(self._graph, node))
+
     @staticmethod
     def _get_nodes_predicates(
         subject_properties: SubjectProperties,
