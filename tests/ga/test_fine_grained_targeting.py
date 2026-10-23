@@ -184,6 +184,23 @@ def test_targeted_if_line_goals(
 
 
 @pytest.mark.parametrize(
+    "line_range",
+    [
+        pytest.param("170", id="block-ending-in-no-cover-condition"),
+        pytest.param("172", id="body-of-no-cover-if"),
+    ],
+)
+def test_targeted_line_next_to_no_cover_condition(
+    subject_properties: SubjectProperties, line_range: str
+):
+    _instrument_target(subject_properties, "assignment_before_no_cover_if", line_range)
+
+    goals = BranchGoalPool(subject_properties).branch_goals
+
+    assert _goal_lines(subject_properties, goals) == [(169, True)]
+
+
+@pytest.mark.parametrize(
     "function_name, line_range, expected_goals",
     [
         pytest.param("loop_else", "93", [(90, False)], id="for-with-break"),

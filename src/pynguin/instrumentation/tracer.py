@@ -28,7 +28,7 @@ import pynguin.assertion.assertion as ass
 import pynguin.slicer.executedinstruction as ei
 import pynguin.utils.typetracing as tt
 from pynguin.instrumentation import PynguinCompare, version
-from pynguin.instrumentation.controlflow import BasicBlockNode
+from pynguin.instrumentation.controlflow import BasicBlockNode, ControlDependenceGraph
 from pynguin.utils.exceptions import TracingAbortedException
 from pynguin.utils.orderedset import OrderedSet
 from pynguin.utils.type_utils import (
@@ -47,7 +47,7 @@ if TYPE_CHECKING:
     from typing_extensions import Self
 
     import pynguin.testcase.testcase as stmt
-    from pynguin.instrumentation.controlflow import CFG, ControlDependenceGraph
+    from pynguin.instrumentation.controlflow import CFG, ControlDependency
 
 immutable_types = (int, float, complex, str, tuple, frozenset, bytes)
 
@@ -647,10 +647,9 @@ class SubjectProperties:
         return line_id
 
     def _add_controlling_predicates_for_node(
-        self, code_object_id: int, code_meta: CodeObjectMetaData, node: BasicBlockNode
+        self, code_object_id: int, dependencies: Iterable[ControlDependency]
     ) -> set[int]:
         added: set[int] = set()
-        dependencies = code_meta.cdg.get_control_dependencies(node)
         for dep in dependencies:
             for pid, meta in self.existing_predicates.items():
                 if (
@@ -789,6 +788,10 @@ class SubjectProperties:
         """
         added: set[int] = set()
         for code_object_id, code_meta in self.existing_code_objects.items():
+            # The coverage CDG leaves out the basic blocks that end in a condition excluded
+            # from coverage, even if their other lines are tracked, and the edges it
+            # reconnects lose their branch value. Use the CDG of the whole code object.
+            full_cdg: ControlDependenceGraph | None = None
             for node in code_meta.cfg.graph.nodes:
                 if not isinstance(node, BasicBlockNode):
                     continue
@@ -800,24 +803,52 @@ class SubjectProperties:
                 }
                 if not node_lines & lines:
                     continue
+                if full_cdg is None:
+                    full_cdg = ControlDependenceGraph.compute(code_meta.cfg)
+                dependencies = self._predicate_dependencies(code_object_id, full_cdg, node)
                 added.update(
-                    self._add_controlling_predicates_for_node(code_object_id, code_meta, node)
+                    self._add_controlling_predicates_for_node(code_object_id, dependencies)
                 )
                 if record_entry_code_objects and not self._has_predicate_dependency(
-                    code_object_id, code_meta, node
+                    code_object_id, dependencies
                 ):
                     self.targeted_entry_code_objects.add(code_object_id)
         return added
 
+    def _predicate_dependencies(
+        self, code_object_id: int, cdg: ControlDependenceGraph, node: BasicBlockNode
+    ) -> list[ControlDependency]:
+        """The control dependencies of the node on registered predicates.
+
+        A dependency on a condition that is no registered predicate (one excluded from
+        coverage) is replaced by the dependencies of that condition.
+        """
+        predicate_nodes = {
+            meta.node
+            for meta in self.existing_predicates.values()
+            if meta.code_object_id == code_object_id
+        }
+        dependencies: list[ControlDependency] = []
+        visited = {node}
+        pending = [node]
+        while pending:
+            for dep in cdg.get_control_dependencies(pending.pop()):
+                if dep.node in predicate_nodes:
+                    dependencies.append(dep)
+                elif dep.node not in visited:
+                    visited.add(dep.node)
+                    pending.append(dep.node)
+        return dependencies
+
     def _has_predicate_dependency(
-        self, code_object_id: int, code_meta: CodeObjectMetaData, node: BasicBlockNode
+        self, code_object_id: int, dependencies: Iterable[ControlDependency]
     ) -> bool:
-        """Whether the node is control-dependent on a (non-auxiliary) predicate."""
+        """Whether one of the dependencies is on a (non-auxiliary) predicate."""
         return any(
             meta.code_object_id == code_object_id
             and meta.node == dep.node
             and not getattr(meta, "is_auxiliary", False)
-            for dep in code_meta.cdg.get_control_dependencies(node)
+            for dep in dependencies
             for meta in self.existing_predicates.values()
         )
 

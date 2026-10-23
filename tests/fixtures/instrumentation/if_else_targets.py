@@ -164,3 +164,10 @@ def multi_line_for_else(xs: list[int]) -> int:
     else:
         return 0
     return 1
+
+def assignment_before_no_cover_if(x: int | None) -> bool:
+    if x is not None:
+        y = x + 1
+        if y is None:  # pragma: no cover
+            return True
+    return False
