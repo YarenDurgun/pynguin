@@ -15,6 +15,7 @@ from pynguin.assertion.mutation_analysis.operators import (
     ArithmeticOperatorReplacement,
     AssignmentOperatorReplacement,
     ConstantReplacement,
+    HidingVariableDeletion,
     experimental_operators,
     standard_operators,
 )
@@ -284,4 +285,32 @@ def test_high_order_mutator_generation_with_multiple_visitors():
                 ),
             },
         },
+    )
+
+
+def test_reorder_skips_mutation_that_cannot_be_regenerated(caplog):
+    module_ast = ParentNodeTransformer.create_ast(
+        inspect.cleandoc(
+            """
+            class Base:
+                x = 1
+
+            class Child(Base):
+                x = 2
+            """
+        )
+    )
+    module = create_module(module_ast, "inheritance_mutant")
+    mutator = FirstOrderMutator([ConstantReplacement, HidingVariableDeletion], reorder=True)
+
+    operators = []
+    for mutations, _ in mutator.mutate(module_ast, module):
+        if not operators:
+            del module.Base.x
+        operators.append(mutations[0].operator)
+
+    assert HidingVariableDeletion not in operators
+    assert operators.count(ConstantReplacement) > 1
+    assert "Skipping mutation HidingVariableDeletion.mutate_Assign of Assign on line 5" in (
+        caplog.text
     )

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import abc
 import itertools
+import logging
 from typing import TYPE_CHECKING
 
 from pynguin.assertion.mutation_analysis.operators.loop import (
@@ -31,6 +32,7 @@ if TYPE_CHECKING:
 
     from pynguin.assertion.mutation_analysis.operators.base import Mutation, MutationOperator
 
+_LOGGER = logging.getLogger(__name__)
 
 # Operators whose mutations frequently turn terminating loops into non-terminating
 # ones. When a bound on the mutation-analysis phase is active, these are scheduled
@@ -168,7 +170,15 @@ class FirstOrderMutator(Mutator):
         for mutation in self._select_mutations(target_ast, module):
             generator = mutation.operator.mutate(target_ast, module, mutation)
             next_value = next(generator, None)
-            assert next_value is not None, "Selected mutation could not be regenerated"
+            if next_value is None:
+                _LOGGER.warning(
+                    "Skipping mutation %s.%s of %s on line %s: it could not be regenerated",
+                    mutation.operator.__name__,
+                    mutation.visitor_name,
+                    type(mutation.node).__name__,
+                    getattr(mutation.node, "lineno", "?"),
+                )
+                continue
             new_mutation, mutant = next_value
             yield [new_mutation], mutant
             # Exhaust the generator so the operator restores the (shared) AST
