@@ -555,6 +555,23 @@ def test_setup_mutant_generator_invalid_order():
         gen._setup_mutant_generator()
 
 
+def test_setup_mutant_generator_checks_the_targeted_lines_first():
+    config.configuration.test_case_output.maximum_mutation_time = 300
+    config.configuration.to_cover.only_cover_line_ranges = ["4", "6-7"]
+
+    mutator = gen._setup_mutant_generator()
+
+    assert isinstance(mutator, gen.mu.FirstOrderMutator)
+    assert mutator._priority_lines == {4, 6, 7}
+
+
+def test_setup_mutant_generator_has_no_priority_lines_without_targeting():
+    mutator = gen._setup_mutant_generator()
+
+    assert isinstance(mutator, gen.mu.FirstOrderMutator)
+    assert not mutator._priority_lines
+
+
 @pytest.mark.parametrize("algorithm", [config.Algorithm.DYNAMOSA, config.Algorithm.LLDYNAMOSA])
 def test_verify_config(tmp_path, algorithm):
     configuration = config.Configuration(

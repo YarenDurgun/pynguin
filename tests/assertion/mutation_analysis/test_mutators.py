@@ -19,6 +19,7 @@ from pynguin.assertion.mutation_analysis.operators import (
     experimental_operators,
     standard_operators,
 )
+from pynguin.assertion.mutation_analysis.operators.base import Mutation
 from pynguin.assertion.mutation_analysis.operators.loop import (
     OneIterationLoop,
     ReverseIterationLoop,
@@ -249,6 +250,70 @@ def test_mutation_count_is_pretruncation_total():
 
     module_ast, module = _build_ordering_module()
     assert sum(1 for _ in capped.mutate(module_ast, module)) == 2
+
+
+def _mutation_lines(mutator):
+    module_ast, module = _build_ordering_module()
+    return [
+        (
+            (mutations[0].operator.__name__, mutations[0].visitor_name, ast.unparse(mutant_ast)),
+            mu._is_on_lines(mutations[0], frozenset({4})),
+        )
+        for mutations, mutant_ast in mutator.mutate(module_ast, module)
+    ]
+
+
+def test_priority_lines_come_first_and_keep_the_order_of_the_rest():
+    all_operators = [*standard_operators, *experimental_operators]
+    plain = _mutation_lines(FirstOrderMutator(all_operators, reorder=True))
+    prioritized = _mutation_lines(
+        FirstOrderMutator(all_operators, reorder=True, priority_lines={4})
+    )
+
+    on_line = [fingerprint for fingerprint, on_line_4 in prioritized if on_line_4]
+    assert on_line, "line 4 of the fixture (total = total + 1) should have mutations"
+    # Same mutants, the ones on line 4 first, the rest in their previous order.
+    assert sorted(f for f, _ in prioritized) == sorted(f for f, _ in plain)
+    assert [f for f, _ in prioritized[: len(on_line)]] == on_line
+    assert [f for f, _ in prioritized[len(on_line) :]] == [f for f, on in plain if not on]
+
+
+def test_priority_lines_are_never_sampled_away():
+    all_operators = [*standard_operators, *experimental_operators]
+    on_line = [
+        f
+        for f, on_line_4 in _mutation_lines(FirstOrderMutator(all_operators, reorder=True))
+        if on_line_4
+    ]
+
+    sampled = _mutation_lines(
+        FirstOrderMutator(
+            all_operators, maximum_mutants=1, sampling_seed=7, reorder=True, priority_lines={4}
+        )
+    )
+
+    assert sorted(f for f, _ in sampled) == sorted(on_line)
+
+
+def test_is_on_lines_uses_the_enclosing_node_without_position():
+    binop = ast.parse("total + 1").body[0].value
+    binop.lineno, binop.end_lineno = 4, 4
+    add = ast.Add()
+    add.parent = binop
+    mutation = Mutation(add, ast.Sub(), ArithmeticOperatorReplacement, "mutate_Add")
+
+    assert mu._is_on_lines(mutation, frozenset({4}))
+    assert not mu._is_on_lines(mutation, frozenset({5}))
+
+
+def test_is_on_lines_spans_multi_line_nodes():
+    module_ast, _ = _build_ordering_module()
+    loop = next(node for node in ast.walk(module_ast) if isinstance(node, ast.For))
+    mutation = Mutation(loop, loop, ZeroIterationLoop, "mutate_For")
+
+    assert (loop.lineno, loop.end_lineno) == (3, 4)
+    assert mu._is_on_lines(mutation, frozenset({4}))
+    assert not mu._is_on_lines(mutation, frozenset({5}))
 
 
 def test_high_order_mutator_generation_with_multiple_visitors():

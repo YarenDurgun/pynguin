@@ -28,7 +28,7 @@ from pynguin.utils import randomness
 if TYPE_CHECKING:
     import ast
     import types
-    from collections.abc import Generator
+    from collections.abc import Collection, Generator
 
     from pynguin.assertion.mutation_analysis.operators.base import Mutation, MutationOperator
 
@@ -89,6 +89,29 @@ def _stratified_counts(sizes: list[int], cap: int) -> list[int]:
     return counts
 
 
+def _is_on_lines(mutation: Mutation, lines: frozenset[int]) -> bool:
+    """Whether the mutated node spans one of the lines.
+
+    Nodes without a position, such as the operator of a binary operation, take the
+    lines of the nearest enclosing node that has one.
+
+    Args:
+        mutation: The mutation.
+        lines: The line numbers.
+
+    Returns:
+        True if the mutated node spans one of the lines.
+    """
+    node: ast.AST | None = mutation.node
+    while node is not None and getattr(node, "lineno", None) is None:
+        node = getattr(node, "parent", None)
+    if node is None:
+        return False
+    start: int = node.lineno  # type: ignore[attr-defined]
+    end: int = getattr(node, "end_lineno", None) or start
+    return any(start <= line <= end for line in lines)
+
+
 class Mutator(abc.ABC):
     """A mutator is responsible for mutating an AST."""
 
@@ -135,6 +158,7 @@ class FirstOrderMutator(Mutator):
         maximum_mutants: int = -1,
         sampling_seed: int = 0,
         reorder: bool = False,
+        priority_lines: Collection[int] = (),
     ) -> None:
         """Initialize the mutator.
 
@@ -148,11 +172,16 @@ class FirstOrderMutator(Mutator):
                 the expensive tail first while keeping the operator mix
                 representative. When False and ``maximum_mutants`` is -1, the
                 historical concatenated-operator-order behavior is preserved.
+            priority_lines: Lines whose mutations come first (the targeted lines in
+                line targeting), so that a truncating bound cuts the others first and
+                the sample never drops them. Only used when ``reorder`` is True or
+                ``maximum_mutants`` is set.
         """
         self.operators = operators
         self._maximum_mutants = maximum_mutants
         self._sampling_seed = sampling_seed
         self._reorder = reorder
+        self._priority_lines = frozenset(priority_lines)
 
     def mutate(  # noqa: D102
         self,
@@ -216,10 +245,33 @@ class FirstOrderMutator(Mutator):
             for op in self.operators
         ]
 
-        total = sum(len(mutations) for _, mutations in per_operator)
-        if self._maximum_mutants >= 0 and total > self._maximum_mutants:
-            per_operator = self._sample(per_operator)
+        # The mutations on the priority lines come first
+        prioritized: list[tuple[type[MutationOperator], list[Mutation]]] = []
+        if self._priority_lines:
+            prioritized = [
+                (op, [m for m in mutations if _is_on_lines(m, self._priority_lines)])
+                for op, mutations in per_operator
+            ]
+            per_operator = [
+                (op, [m for m in mutations if not _is_on_lines(m, self._priority_lines)])
+                for op, mutations in per_operator
+            ]
+            _LOGGER.info(
+                "Checking the %i mutant(s) on the targeted lines first",
+                sum(len(mutations) for _, mutations in prioritized),
+            )
 
+        total = sum(len(mutations) for _, mutations in per_operator)
+        cap = self._maximum_mutants - sum(len(mutations) for _, mutations in prioritized)
+        if self._maximum_mutants >= 0 and total > cap:
+            per_operator = self._sample(per_operator, max(0, cap))
+
+        return self._order(prioritized) + self._order(per_operator)
+
+    @staticmethod
+    def _order(
+        per_operator: list[tuple[type[MutationOperator], list[Mutation]]],
+    ) -> list[Mutation]:
         regular = [
             mutations for op, mutations in per_operator if op not in _TIMEOUT_PRONE_OPERATORS
         ]
@@ -229,11 +281,12 @@ class FirstOrderMutator(Mutator):
     def _sample(
         self,
         per_operator: list[tuple[type[MutationOperator], list[Mutation]]],
+        cap: int,
     ) -> list[tuple[type[MutationOperator], list[Mutation]]]:
         rng = randomness.Random(self._sampling_seed)
         counts = _stratified_counts(
             [len(mutations) for _, mutations in per_operator],
-            self._maximum_mutants,
+            cap,
         )
         sampled: list[tuple[type[MutationOperator], list[Mutation]]] = []
         for (op, mutations), keep in zip(per_operator, counts, strict=True):

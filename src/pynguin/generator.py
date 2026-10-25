@@ -75,6 +75,7 @@ from pynguin.assertion.mutation_analysis.controller import MutationController
 from pynguin.assertion.mutation_analysis.transformer import ParentNodeTransformer
 from pynguin.instrumentation.machinery import InstrumentationFinder, install_import_hook
 from pynguin.instrumentation.tracer import SubjectProperties
+from pynguin.instrumentation.transformer import ModuleAstInfo
 from pynguin.large_language_model.client import OpenAIClient, extract_python_code
 from pynguin.testcase import export
 from pynguin.testcase.execution import (
@@ -1470,11 +1471,16 @@ def _setup_mutant_generator() -> mu.Mutator:
         # Reorder (interleave + defer timeout-prone operators) whenever a bound on
         # the mutation-analysis phase is active, so truncation stays fair.
         reorder = output.maximum_mutants >= 0 or output.maximum_mutation_time >= 0
+        # With line targeting, check the mutants of the targeted lines first
+        targeted_lines = ModuleAstInfo.parse_line_ranges(
+            config.configuration.to_cover.only_cover_line_ranges
+        )
         return mu.FirstOrderMutator(
             operators,
             maximum_mutants=output.maximum_mutants,
             sampling_seed=config.configuration.seeding.seed,
             reorder=reorder,
+            priority_lines=set(targeted_lines),
         )
 
     order = config.configuration.test_case_output.mutation_order
