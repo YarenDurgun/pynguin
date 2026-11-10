@@ -487,6 +487,9 @@ def get_function_node_from_ast(
 ) -> ASTFunctionDef | None:
     """Get the AST Node that represents the function with the given name.
 
+    ``@overload`` stubs are skipped, so for an overloaded function this returns the
+    implementation. If there are only stubs, the first one is returned.
+
     Args:
         tree: The AST to search
         name: The name of the function.
@@ -496,13 +499,34 @@ def get_function_node_from_ast(
     """
     if tree is None:
         return None
+    first_stub: ASTFunctionDef | None = None
     queue: list[ast.AST] = list(tree.body)
     while queue:
         node = queue.pop(0)
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name:
-            return node
+            if not _is_overload_stub(node):
+                return node
+            if first_stub is None:
+                first_stub = node
         queue.extend(_nested_statements(node))
-    return None
+    return first_stub
+
+
+def _is_overload_stub(node: ASTFunctionDef) -> bool:
+    """Checks whether a function is an ``@overload`` stub.
+
+    Args:
+        node: The function node from the AST
+
+    Returns:
+        Whether the function is decorated with ``overload``
+    """
+    for decorator in node.decorator_list:
+        if isinstance(decorator, ast.Name) and decorator.id == "overload":
+            return True
+        if isinstance(decorator, ast.Attribute) and decorator.attr == "overload":
+            return True
+    return False
 
 
 def get_class_node_from_ast(tree: ast.Module | None, name: str) -> ast.ClassDef | None:

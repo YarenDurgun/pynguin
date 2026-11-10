@@ -67,6 +67,49 @@ def test_get_function_description(comments_tree, function):
 
 
 @pytest.mark.parametrize(
+    "decorator",
+    [
+        pytest.param("overload", id="name"),
+        pytest.param("typing.overload", id="attribute"),
+    ],
+)
+def test_get_function_node_skips_overload_stubs(decorator):
+    tree = __parse_ast(
+        f"@{decorator}\n"
+        "def f(x: int) -> int: ...\n"
+        f"@{decorator}\n"
+        "def f(x: str) -> str: ...\n"
+        "def f(x):\n"
+        "    raise ValueError\n"
+    )
+    node = get_function_node_from_ast(tree, "f")
+    assert node is not None
+    assert node.lineno == 5
+
+
+def test_get_function_node_skips_overload_stubs_in_class():
+    tree = __parse_ast(
+        "class C:\n"
+        "    @overload\n"
+        "    def m(self, x: int) -> int: ...\n"
+        "    def m(self, x):\n"
+        "        return x\n"
+    )
+    node = get_function_node_from_ast(get_class_node_from_ast(tree, "C"), "m")
+    assert node is not None
+    assert node.lineno == 4
+
+
+def test_get_function_node_only_overload_stubs():
+    tree = __parse_ast(
+        "@overload\ndef f(x: int) -> int: ...\n@overload\ndef f(x: str) -> str: ...\n"
+    )
+    node = get_function_node_from_ast(tree, "f")
+    assert node is not None
+    assert node.lineno == 2
+
+
+@pytest.mark.parametrize(
     "function",
     [
         "__init__",

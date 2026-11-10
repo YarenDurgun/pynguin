@@ -347,6 +347,38 @@ def test_accessible():
     assert len(cluster.accessible_objects_under_test) == 4
 
 
+def _overloaded_under_test(line_ranges: list[str]) -> dict[str, set[str]]:
+    # Maps each function or method under test to its expected exceptions.
+    config.configuration.to_cover.only_cover_line_ranges = line_ranges
+    cluster = generate_test_cluster("tests.fixtures.cluster.overloads")
+    under_test: dict[str, set[str]] = {}
+    for accessible in cluster.accessible_objects_under_test:
+        if isinstance(accessible, GenericFunction):
+            under_test[accessible.function_name] = set(accessible.expected_exceptions)
+        elif isinstance(accessible, GenericMethod):
+            under_test[accessible.method_name] = set(accessible.expected_exceptions)
+    return under_test
+
+
+def test_overloaded_implementations_are_analysed():
+    # The expected exceptions come from the implementations, not from the stubs.
+    under_test = _overloaded_under_test([])
+    assert under_test["combine"] == {"ValueError"}
+    assert under_test["get"] == {"KeyError"}
+
+
+@pytest.mark.parametrize(
+    "line_range, expected",
+    [
+        pytest.param("21", "combine", id="function"),
+        pytest.param("34", "get", id="method"),
+    ],
+)
+def test_target_line_in_overloaded_implementation(line_range, expected):
+    under_test = _overloaded_under_test([line_range])
+    assert set(under_test) == {expected}
+
+
 def test_typeshed_strategy_builds_cluster_for_c_extension_module():
     """The TYPESHED strategy must not crash when analysing a C-extension module.
 
