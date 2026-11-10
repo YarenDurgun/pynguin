@@ -9,6 +9,7 @@
 import inspect
 import operator
 import re
+import sys
 from typing import Any, ParamSpec, TypeVar, Union
 from unittest import mock
 
@@ -1153,3 +1154,47 @@ def test_get_candidate_types_for_param_spec():
     candidates = type_system.get_candidate_types_for_type_var(P)
     assert any(isinstance(c, Instance) and c.type.raw_type is int for c in candidates)
     assert any(isinstance(c, Instance) and c.type.raw_type is str for c in candidates)
+
+
+def _type_param_with_unresolvable_names(declaration: str) -> Any:
+    # The class is built with exec, so this file still parses on Python < 3.12.
+    namespace: dict[str, Any] = {}
+    exec(f"class Box[{declaration}]: pass", namespace)  # noqa: S102
+    return namespace["Box"].__type_params__[0]
+
+
+@pytest.mark.skipif(
+    sys.version_info < (3, 12), reason="type parameter syntax requires Python 3.12+"
+)
+@pytest.mark.parametrize(
+    "declaration,attribute",
+    [
+        pytest.param("T: Missing", "__bound__", id="bound"),
+        pytest.param("T: (Missing, int)", "__constraints__", id="constraints"),
+    ],
+)
+def test_get_candidate_types_for_type_var_with_unresolvable_names(declaration, attribute):
+    raw_tv = _type_param_with_unresolvable_names(declaration)
+    with pytest.raises(NameError):
+        getattr(raw_tv, attribute)
+    type_system = TypeSystem()
+    candidates = type_system.get_candidate_types_for_type_var(raw_tv)
+    assert candidates == type_system.get_candidate_types_for_type_var(TypeVar("T"))
+
+
+@pytest.mark.skipif(
+    sys.version_info < (3, 12), reason="type parameter syntax requires Python 3.12+"
+)
+@pytest.mark.parametrize(
+    "declaration",
+    [
+        pytest.param("T: Missing", id="bound"),
+        pytest.param("T: (Missing, int)", id="constraints"),
+    ],
+)
+def test_convert_type_var_with_unresolvable_names(declaration):
+    raw_tv = _type_param_with_unresolvable_names(declaration)
+    converted = TypeSystem().convert_type_hint(raw_tv)
+    assert isinstance(converted, TypeVarType)
+    assert converted.bound is None
+    assert converted.constraints == ()

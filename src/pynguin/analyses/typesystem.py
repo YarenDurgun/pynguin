@@ -1871,6 +1871,29 @@ class InferredSignature:
         return tvs
 
 
+def _read_type_var_attribute(type_var: Any, name: str, default: Any) -> Any:
+    """Reads the bound or the constraints of a type variable.
+
+    Since Python 3.12, the bound and the constraints of a type parameter can be declared
+    with the new syntax ``class C[T: Bound]``. If they name something that is imported
+    only under ``typing.TYPE_CHECKING``, reading them raises a ``NameError``. We treat
+    them as missing.
+
+    Args:
+        type_var: The type variable.
+        name: The attribute to read, ``"__bound__"`` or ``"__constraints__"``.
+        default: The value to return if the attribute is missing or cannot be evaluated.
+
+    Returns:
+        The value of the attribute, or the default.
+    """
+    try:
+        return getattr(type_var, name, default)
+    except Exception as exc:  # noqa: BLE001
+        _LOGGER.debug("Could not evaluate %s of %s: %s", name, type_var, exc)
+        return default
+
+
 class TypeSystem:  # noqa: PLR0904
     """Implements Pynguin's internal type system.
 
@@ -2115,10 +2138,11 @@ class TypeSystem:  # noqa: PLR0904
         if raw_tv is not None:
             if type(raw_tv).__name__ in {"ParamSpec", "TypeVarTuple"}:
                 return self._default_candidate_types(custom_classes)
-            if getattr(raw_tv, "__constraints__", ()):
-                return [self.convert_type_hint(c) for c in raw_tv.__constraints__]
+            constraints = _read_type_var_attribute(raw_tv, "__constraints__", ())
+            if constraints:
+                return [self.convert_type_hint(c) for c in constraints]
 
-            bound = getattr(raw_tv, "__bound__", None)
+            bound = _read_type_var_attribute(raw_tv, "__bound__", None)
             if bound is not None and bound is not type(None):
                 return self._candidates_from_bound(self.convert_type_hint(bound))
 
@@ -2473,13 +2497,15 @@ class TypeSystem:  # noqa: PLR0904
             return self._fixup_known_generics(result)
 
         if isinstance(hint, TypeVar):
+            raw_bound = _read_type_var_attribute(hint, "__bound__", None)
             bound = (
-                self.convert_type_hint(hint.__bound__, unsupported=unsupported)
-                if hint.__bound__ is not None
+                self.convert_type_hint(raw_bound, unsupported=unsupported)
+                if raw_bound is not None
                 else None
             )
             constraints = tuple(
-                self.convert_type_hint(c, unsupported=unsupported) for c in hint.__constraints__
+                self.convert_type_hint(c, unsupported=unsupported)
+                for c in _read_type_var_attribute(hint, "__constraints__", ())
             )
             return TypeVarType(
                 name=hint.__name__,
