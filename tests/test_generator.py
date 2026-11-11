@@ -21,7 +21,7 @@ import pynguin.ga.postprocess as pp
 import pynguin.ga.testsuitechromosome as tsc
 import pynguin.generator as gen
 from pynguin.configuration import CoverageMetric
-from pynguin.utils.exceptions import CannotInstrumentCompiledModuleError
+from pynguin.utils.exceptions import CannotInstrumentCompiledModuleError, TracingAbortedException
 from pynguin.utils.statistics.runtimevariable import RuntimeVariable
 from pynguin.utils.timeout import TestExecutionTimeoutError
 
@@ -615,6 +615,19 @@ def test_check_sut_uses_random_true_when_bound_method():
     fake_mod.choice = _random.choice  # noqa: S311
     with mock.patch.dict(sys.modules, {"random": _random, "bound_method_sut": fake_mod}):
         assert gen._check_sut_uses_random({"bound_method_sut"}) is True
+
+
+class _AbortingGetattr:
+    # Like an instrumented __getattr__ of the SUT running outside a test execution.
+    def __getattr__(self, name):
+        raise TracingAbortedException("The current thread shall not be executed anymore")
+
+
+def test_check_sut_uses_random_false_when_getattr_aborts_tracing():
+    fake_mod = types.ModuleType("aborting_getattr_sut")
+    fake_mod.token = _AbortingGetattr()
+    with mock.patch.dict(sys.modules, {"random": _random, "aborting_getattr_sut": fake_mod}):
+        assert gen._check_sut_uses_random({"aborting_getattr_sut"}) is False
 
 
 def test_check_sut_uses_random_true_when_random_class():

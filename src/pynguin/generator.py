@@ -87,6 +87,7 @@ from pynguin.utils import randomness
 from pynguin.utils.exceptions import (
     CannotInstrumentCompiledModuleError,
     ConfigurationException,
+    TracingAbortedException,
 )
 from pynguin.utils.report import (
     get_coverage_report,
@@ -439,7 +440,10 @@ def _is_random_entity(value: object, random_module: types.ModuleType) -> bool:
                 return True
         if getattr(value, "__module__", None) in {"random", "_random"}:
             return True
-    except Exception:  # noqa: BLE001
+    # Reading an attribute can run the SUT's own code, e.g., a __getattr__ method. The SUT is
+    # already instrumented at this point, and its code running outside a test execution makes
+    # the tracer raise TracingAbortedException, which is a BaseException, not an Exception.
+    except (Exception, TracingAbortedException):
         return False
     return False
 
